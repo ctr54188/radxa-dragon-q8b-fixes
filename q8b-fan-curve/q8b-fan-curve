@@ -37,7 +37,7 @@ import time
 
 HWMON_NAME = os.environ.get("Q8B_FAN_HWMON", "radxa_svc_glink")
 TRIPS = [float(v) for v in os.environ.get("Q8B_FAN_TRIPS", "35 50 60 70 80").split()]
-DUTIES = [float(v) for v in os.environ.get("Q8B_FAN_DUTIES", "35 50 66 82 96").split()]
+DUTIES = [float(v) for v in os.environ.get("Q8B_FAN_DUTIES", "40 50 66 82 96").split()]
 INTERVAL = float(os.environ.get("Q8B_FAN_INTERVAL", "3"))
 HYST = float(os.environ.get("Q8B_FAN_HYSTERESIS", "2"))
 SAFETY = float(os.environ.get("Q8B_FAN_SAFETY_TEMP", "85"))
@@ -155,7 +155,31 @@ def main():
                     log(f"{t:.1f}C >= safety {SAFETY}C -> fan 100% (pwm1=255)")
                     last_written = 255
             else:
+                # make sure we still own the fan: anything that flips it back to
+                # automatic (or writes another duty) must not stick
+                try:
+                    if int(slurp(enable)) != 1:
+                        poke(enable, 1)
+                        log("re-asserted manual mode")
+                except (OSError, ValueError):
+                    pass
                 new = step_for(t, step)
+                want = int(round(pct_for(new) * 255 / 100.0))
+                try:
+                    have = int(slurp(pwm))
+                except (OSError, ValueError):
+                    have = None
+                if have is not None and have != want:
+                    log(f"duty was {have} (expected {want}) - re-asserting")
+                    try:
+                        poke(pwm, want)
+                    except OSError as exc:
+                        log(f"write pwm1 failed: {exc}")
+                        break
+                    step = new
+                    last_written = want
+                    time.sleep(INTERVAL)
+                    continue
                 if new != step:
                     duty = int(round(pct_for(new) * 255 / 100.0))
                     try:

@@ -26,7 +26,7 @@ sudo ./install.sh status
 | 路径 | 内容 |
 |---|---|
 | [`q8b-el2-dsp-venus/`](q8b-el2-dsp-venus/) | **EL2 + DSP + 音频 + Venus 硬件编解码**：本机编译内核模块（`qcom_q6v5_pas` 的 attach+tzmem、venus 的 HFI6）、自编 UEFI 预加载驱动（qebspil）+ launcher、DTB 一行属性让固件选 EL2、两条 GRUB 项 + 一次性交接 + 自愈 rearm 单元；同时修好 EL1 下的硬解 |
-| [`q8b-fan-curve/`](q8b-fan-curve/) | **自定义风扇曲线**：通过固件**手动模式**接管转速（不抢 LPG 硬件），`<35°C 停转 / 35°C 25% / 40°C 35% / 50°C 50% / 60°C 66% / 70°C 82% / 80°C 96%`，带滞回、超温钳制与失败安全 |
+| [`q8b-fan-curve/`](q8b-fan-curve/) | **自定义风扇曲线**：通过固件**手动模式**接管转速（不抢 LPG 硬件），`<35°C 停转 / 35°C 40% / 50°C 50% / 60°C 66% / 70°C 82% / 80°C 96%`，带滞回、超温钳制与失败安全 |
 | [`background/`](background/) | 背景资料：为什么这块板子的风扇其实由 **ADSP 固件服务**驱动（`radxa_svc_glink` → PMIC LPG PWM ch3 → 反相 MOS → J6）、相关内核源码副本、以及一个读 hwmon 的小工具 |
 
 ## 为什么需要这些修复
@@ -109,7 +109,7 @@ Two independent, idempotent installers for the **Radxa Dragon Q8B** (SC8280XP):
   one-shot, self-healing GRUB handoff. EL1 also gets the venus/HFI6 video fix.
 * **`q8b-fan-curve`** — replace the aggressive firmware fan curve with your own by driving
   the ADSP fan service's *manual mode* (no fighting over the PMIC LPG hardware).
-  Default: off below 35 °C, then 25/35/50/66/82/96 % at 35/40/50/60/70/80 °C.
+  Default: off below 35 °C, then 40/50/66/82/96 % at 35/50/60/70/80 °C.
 
 Both were verified end-to-end on a Q8B (Armbian 26.8.1, vendor kernel 7.0.11).
 See each project's README for requirements, failure modes and the full pitfall list.
