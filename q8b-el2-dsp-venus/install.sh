@@ -284,6 +284,27 @@ cmd_install() {
 	cmd_build
 	mkdir -p "$BAK"
 
+	# --- backups of everything we replace (an existing backup is NEVER overwritten) ---
+	mkdir -p "$BAK"
+	if [ ! -f "$BAK/qcom_q6v5_pas.ko.zst.orig" ]; then
+		if [ -f "$STOCK" ]; then
+			cp -a "$STOCK" "$BAK/qcom_q6v5_pas.ko.zst.orig"
+		else
+			warn "原始 qcom_q6v5_pas.ko.zst 已不存在，无法备份 -> uninstall 无法还原它"
+			warn "（重复安装时请确认 $BAK 里已有正确的原始备份）"
+		fi
+	fi
+	[ -f "$BAK/grub.cfg.orig" ] || cp -a /boot/grub/grub.cfg "$BAK/grub.cfg.orig"
+	for m in venus-core venus-dec venus-enc; do
+		if [ ! -f "$BAK/$m.ko.zst.orig" ]; then
+			if [ -f "$VENUS_DST/$m.ko.zst" ]; then
+				cp -a "$VENUS_DST/$m.ko.zst" "$BAK/$m.ko.zst.orig"
+			else
+				warn "原始 $m.ko.zst 已不存在，无法备份 -> uninstall 无法还原它"
+			fi
+		fi
+	done
+
 	# --- safety: never touch /lib/modules unless every artifact exists ---
 	local art
 	for art in "$PAS_SRC/qcom_q6v5_pas.ko" "$VENUS_SRC/venus-core.ko" \
@@ -293,12 +314,9 @@ cmd_install() {
 	[ -f "$ESPDIR/../q8b-test-20260909/qebspilaa64.efi" ] 2>/dev/null || true
 
 	# --- locally built kernel modules (stock copies are kept) ---
-	[ -f "$BAK/qcom_q6v5_pas.ko.zst.orig" ] || cp -a "$STOCK" "$BAK/qcom_q6v5_pas.ko.zst.orig"
-	[ -f "$BAK/grub.cfg.orig" ] || cp -a /boot/grub/grub.cfg "$BAK/grub.cfg.orig"
 	cp -f "$PAS_SRC/qcom_q6v5_pas.ko" "$MODDIR/qcom_q6v5_pas.ko"
 	rm -f "$MODDIR/qcom_q6v5_pas.ko.zst"
 	for m in venus-core venus-dec venus-enc; do
-		[ -f "$VENUS_DST/$m.ko.zst" ] && [ ! -f "$BAK/$m.ko.zst.orig" ] && cp -a "$VENUS_DST/$m.ko.zst" "$BAK/$m.ko.zst.orig"
 		cp -f "$VENUS_SRC/$m.ko" "$VENUS_DST/$m.ko"
 		rm -f "$VENUS_DST/$m.ko.zst"
 	done
