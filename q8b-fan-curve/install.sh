@@ -101,12 +101,17 @@ cmd_status() {
 		echo "  警告    : 未找到 radxa_svc_glink（ADSP 风扇服务未运行，需要先修好 DSP）"
 		return 1
 	}
-	local pwm en t best=0 bestn=""
+	# 用与曲线一致的输入（读配置里的前缀），避免显示与实际控制不一致
+	local prefixes="cluster gpuss"
+	[ -f "$CONF" ] && prefixes=$(sed -n 's/^Q8B_FAN_SENSOR_PREFIXES="\(.*\)"/\1/p' "$CONF")
+	local pwm en best=0 bestn="(无匹配传感器)"
 	for z in /sys/class/thermal/thermal_zone*; do
 		[ -r "$z/type" ] || continue
-		local n; n=$(cat "$z/type")
-		case "$n" in cluster*|gpuss*|cpu*) ;; *) continue ;; esac
-		local v; v=$(cat "$z/temp" 2>/dev/null) || continue
+		local n v hit=0 p
+		n=$(cat "$z/type")
+		for p in $prefixes; do case "$n" in $p*) hit=1 ;; esac; done
+		[ "$hit" = 1 ] || continue
+		v=$(cat "$z/temp" 2>/dev/null) || continue
 		[ "$v" -gt "$best" ] && { best=$v; bestn=$n; }
 	done
 	pwm=$(cat "$h/pwm1" 2>/dev/null); en=$(cat "$h/pwm1_enable" 2>/dev/null)
