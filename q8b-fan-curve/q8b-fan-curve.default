@@ -1,0 +1,22 @@
+# Q8B 风扇曲线（q8b-fan-curve 服务读取本文件）
+#
+#   Q8B_FAN_TRIPS  : 温度阈值，单位 °C，升序
+#   Q8B_FAN_DUTIES : 每个阈值对应的风扇转速百分比，与 TRIPS 等长且升序
+#                    低于第一个 trip 时风扇停转
+#
+# 当前曲线： <35C 停转 | >=35C 25% | >=40C 35% | >=50C 50% | >=60C 66% | >=70C 82% | >=80C 96%
+Q8B_FAN_TRIPS="35 40 50 60 70 80"
+Q8B_FAN_DUTIES="25 35 50 66 82 96"
+
+# 采样间隔（秒）与滞回（°C，避免在阈值附近反复变速）
+Q8B_FAN_INTERVAL="3"
+Q8B_FAN_HYSTERESIS="2"
+
+# 超过该温度直接钳到 100%（仍由本服务掌控，降温后自动回到曲线）
+Q8B_FAN_SAFETY_TEMP="85"
+
+# 温度输入：thermal zone 的 type 前缀（取所有匹配传感器的最大值）
+#   cluster = CPU 大核簇，gpuss = GPU —— 与固件自身使用的输入同级
+#   注意：per-core 的 cpuN-1-thermal 空闲就比 cluster 高 ~12°C，
+#   若加进来 "低温停转" 基本无法触发（需要更保守可自行加入 cpu）
+Q8B_FAN_SENSOR_PREFIXES="cluster gpuss"

@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# =====================================================================
+#  q8b-fan-curve - replace the Q8B firmware fan curve with our own
+#
+#  The ADSP firmware service owns the PMC8280C LPG PWM (channel 3) and by
+#  default applies its own curve, which is quite aggressive (it already
+#  spins the fan at ~45% around 38 C).  The service also exposes a manual
+#  mode, so instead of fighting it over the hardware we simply put it in
+#  manual mode and write our own duty cycle:
+#
+#     /sys/class/hwmon/hwmonN/pwm1_enable = 1   (manual)
+#     /sys/class/hwmon/hwmonN/pwm1        = duty 0..255
+#
+#  pwm1 semantics (measured on the board via debugfs pwm_state):
+#     pwm1 =   0 -> LPG 100% -> MOSFET on  -> fan   0% (stopped)
+#     pwm1 = 128 -> LPG  50%                -> fan  50%
+#     pwm1 = 255 -> LPG   0% -> MOSFET off -> fan 100%
+#  i.e. pwm1 IS the fan duty; the firmware hides the MOSFET inversion.
+#
+#  Curve (Q8B_FAN_TRIPS / Q8B_FAN_DUTIES, both ascending):
+#     below 35 C -> 0 % (fan stopped)
+#     >= 35 C -> 25 %   >= 40 C -> 35 %   >= 50 C -> 50 %
+#     >= 60 C -> 66 %   >= 70 C -> 82 %   >= 80 C -> 96 %
+#  Above Q8B_FAN_SAFETY_TEMP the fan is clamped to 100 % (still under our
+#  control, so the curve resumes as soon as it cools down).
+#
+#  Safety: on exit (or if the temperature runs away) control is handed
+#  back to the firmware by setting pwm1_enable = 2, so the fan can never
+#  be left stuck at a low duty.
+# =====================================================================
+import glob
+import os
+import signal
+import sys
+import time
+
+HWMON_NAME = os.environ.get("Q8B_FAN_HWMON", "radxa_svc_glink")
+TRIPS = [float(v) for v in os.environ.get("Q8B_FAN_TRIPS", "35 50 60 70 80").split()]
+DUTIES = [float(v) for v in os.environ.get("Q8B_FAN_DUTIES", "35 50 66 82 96").split()]
+INTERVAL = float(os.environ.get("Q8B_FAN_INTERVAL", "3"))
+HYST = float(os.environ.get("Q8B_FAN_HYSTERESIS", "2"))
+SAFETY = float(os.environ.get("Q8B_FAN_SAFETY_TEMP", "85"))
+PREFIXES = tuple(os.environ.get("Q8B_FAN_SENSOR_PREFIXES", "cluster cpu gpuss").split())
+MIN_WRITE = float(os.environ.get("Q8B_FAN_MIN_WRITE_DELTA", "1"))
+
+assert len(TRIPS) == len(DUTIES), "Q8B_FAN_TRIPS and Q8B_FAN_DUTIES must have equal length"
+assert TRIPS == sorted(TRIPS) and DUTIES == sorted(DUTIES), "trips and duties must be ascending"
+
+
+def log(msg):
+    print(f"q8b-fan-curve: {msg}", flush=True)
+
+
+def slurp(path):
+    with open(path, "r") as fh:
+        return fh.read().strip()
+
+
+def poke(path, value):
+    with open(path, "w") as fh:
+        fh.write(str(value))
+    return slurp(path)
+
+
+def find_hwmon():
+    for h in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+        try:
+            if slurp(os.path.join(h, "name")) == HWMON_NAME:
+                return h
+        except OSError:
+            continue
+    return None
+
+
+def hottest():
+    """hottest CPU (and GPU) thermal zone in degrees C, or None"""
+    best = None
+    for zone in glob.glob("/sys/class/thermal/thermal_zone*"):
+        try:
+            name = slurp(os.path.join(zone, "type"))
+        except OSError:
+            continue
+        if not name.startswith(PREFIXES):
+            continue
+        try:
+            t = int(slurp(os.path.join(zone, "temp"))) / 1000.0
+        except (OSError, ValueError):
+            continue
+        if best is None or t > best:
+            best = t
+    return best
+
+
+def step_for(temp, current):
+    """current = step index (-1 == off); step up at once, step down with hysteresis"""
+    idx = current
+    while idx + 1 < len(TRIPS) and temp >= TRIPS[idx + 1]:
+        idx += 1
+    while idx >= 0 and temp < TRIPS[idx] - HYST:
+        idx -= 1
+    return idx
+
+
+def pct_for(idx):
+    return 0.0 if idx < 0 else DUTIES[idx]
+
+
+def main():
+    # the ADSP service needs a few seconds after boot before its hwmon appears
+    hw = find_hwmon()
+    waited = 0
+    while not hw and waited < 60:
+        time.sleep(2)
+        waited += 2
+        hw = find_hwmon()
+    if not hw:
+        log(f"{HWMON_NAME} not found after {waited}s - not taking control")
+        return 0
+
+    pwm = os.path.join(hw, "pwm1")
+    enable = os.path.join(hw, "pwm1_enable")
+    log(f"using {hw}; trips={TRIPS} duties={DUTIES} interval={INTERVAL}s hyst={HYST}C")
+
+    try:
+        poke(enable, 1)          # take manual control
+    except OSError as exc:
+        log(f"cannot switch to manual mode: {exc}")
+        return 1
+
+    step = -1
+    last_written = None
+    stopping = {"now": False}
+
+    def on_signal(_sig, _frm):
+        stopping["now"] = True
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+
+    try:
+        while not stopping["now"]:
+            t = hottest()
+            if t is None:
+                log("no matching thermal zone - keeping the current duty")
+            elif t >= SAFETY:
+                # clamp to full speed but keep control, so the curve resumes later
+                step = len(TRIPS) - 1
+                if last_written != 255:
+                    try:
+                        poke(pwm, 255)
+                    except OSError as exc:
+                        log(f"write pwm1 failed: {exc}")
+                        break
+                    log(f"{t:.1f}C >= safety {SAFETY}C -> fan 100% (pwm1=255)")
+                    last_written = 255
+            else:
+                new = step_for(t, step)
+                if new != step:
+                    duty = int(round(pct_for(new) * 255 / 100.0))
+                    try:
+                        got = poke(pwm, duty)
+                    except OSError as exc:
+                        log(f"write pwm1 failed: {exc}")
+                        break
+                    if last_written is None or abs(int(got) - duty) >= MIN_WRITE:
+                        log(f"{t:.1f}C -> fan {pct_for(new):.0f}% (pwm1={got})")
+                    step = new
+                    last_written = int(got)
+            time.sleep(INTERVAL)
+    finally:
+        try:
+            poke(enable, 2)      # never leave the fan in manual mode
+            log("control handed back to the firmware (auto)")
+        except OSError as exc:
+            log(f"could not restore auto mode: {exc}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
